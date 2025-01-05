@@ -10,6 +10,10 @@ import aiohttp
 from pydantic import BaseModel
 import time
 import re
+from colorama import init, Fore, Style
+
+# Initialize colorama
+init()
 
 # Load environment variables
 load_dotenv()
@@ -96,8 +100,8 @@ async def store_message(context: ContextTypes.DEFAULT_TYPE, message):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
-    # Очищаем предыдущие сообщения
-    await cleanup_messages(context, update.message.chat_id)
+    # Очищаем предыдущие сообщения и команду пользователя
+    await cleanup_messages(context, update.message.chat_id, update.message.message_id)
     
     # Отправляем приветственное сообщение
     message = await update.message.reply_text(
@@ -106,53 +110,111 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await store_message(context, message)
 
+async def log_api_request(method: str, url: str, params: dict = None, headers: dict = None):
+    """Логирование API запросов с цветом."""
+    log_message = f"\n{Fore.CYAN}API Request:{Style.RESET_ALL}\n"
+    log_message += f"{Fore.GREEN}Method:{Style.RESET_ALL} {method}\n"
+    log_message += f"{Fore.GREEN}URL:{Style.RESET_ALL} {url}\n"
+    
+    if params:
+        log_message += f"{Fore.GREEN}Params:{Style.RESET_ALL}\n"
+        for key, value in params.items():
+            log_message += f"  {Fore.YELLOW}{key}:{Style.RESET_ALL} {value}\n"
+    
+    if headers:
+        log_message += f"{Fore.GREEN}Headers:{Style.RESET_ALL}\n"
+        # Скрываем API ключ в логах
+        safe_headers = headers.copy()
+        if 'X-API-Key' in safe_headers:
+            safe_headers['X-API-Key'] = '***'
+        for key, value in safe_headers.items():
+            log_message += f"  {Fore.YELLOW}{key}:{Style.RESET_ALL} {value}\n"
+    
+    logger.info(log_message)
+
+async def log_api_response(status: int, data: str):
+    """Логирование ответов API с цветом."""
+    color = Fore.GREEN if 200 <= status < 300 else Fore.RED
+    log_message = f"\n{Fore.CYAN}API Response:{Style.RESET_ALL}\n"
+    log_message += f"{Fore.GREEN}Status:{Style.RESET_ALL} {color}{status}{Style.RESET_ALL}\n"
+    log_message += f"{Fore.GREEN}Data:{Style.RESET_ALL}\n{data}\n"
+    logger.info(log_message)
+
 async def get_video_info(url: str) -> dict:
     """Get video information from API."""
     async with aiohttp.ClientSession() as session:
         headers = {"X-API-Key": VIDEO_API_KEY}
+        params = {"url": url}
+        full_url = f"{API_BASE_URL}/combined-info"
+        
+        await log_api_request("GET", full_url, params, headers)
+        
         try:
-            full_url = f"{API_BASE_URL}/combined-info"
-            logger.info(f"Making request to: {full_url}")
-            logger.info(f"With headers: {headers}")
-            logger.info(f"With params: {{'url': {url}}}")
-            
-            async with session.get(full_url, 
-                                params={"url": url},
-                                headers=headers) as response:
+            async with session.get(full_url, params=params, headers=headers) as response:
+                response_text = await response.text()
+                await log_api_response(response.status, response_text)
+                
                 if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"API returned status {response.status}: {error_text}")
-                    raise Exception(f"API error: {error_text}")
+                    raise Exception(f"API error: {response_text}")
                 return await response.json()
         except Exception as e:
-            logger.error(f"Error in get_video_info: {str(e)}")
+            logger.error(f"{Fore.RED}Error in get_video_info: {str(e)}{Style.RESET_ALL}")
             raise
 
-async def create_download_task(url: str, format_id: str) -> dict:
+async def create_download_task(url: str, format_id: str, is_audio: bool = False) -> dict:
     """Create a download task."""
     async with aiohttp.ClientSession() as session:
-        headers = {"X-API-Key": VIDEO_API_KEY}
-        params = {
-            "url": url,
-            "format": format_id
+        headers = {
+            "X-API-Key": VIDEO_API_KEY,
+            "accept": "application/json"
         }
-        async with session.get(f"{API_BASE_URL}/download",
-                             params=params,
-                             headers=headers) as response:
-            return await response.json()
+        
+        if is_audio:
+            endpoint = f"{API_BASE_URL}/audio/download"
+            params = {
+                "url": url,
+                "format": "high",  # Используем высокое качество для аудио
+                "convert_to_mp3": "true"
+            }
+        else:
+            endpoint = f"{API_BASE_URL}/download"
+            # Определяем качество видео на основе format_id
+            if format_id in ["SD", "HD", "FullHD"]:
+                format_param = format_id
+            else:
+                format_param = format_id
+                
+            params = {
+                "url": url,
+                "format": format_param
+            }
+        
+        await log_api_request("GET", endpoint, params, headers)
+        
+        async with session.get(endpoint, params=params, headers=headers) as response:
+            response_text = await response.text()
+            await log_api_response(response.status, response_text)
+            
+            if response.status == 202:  # API возвращает 202 при успешном создании задачи
+                return await response.json()
+            else:
+                raise Exception(f"API error: {response_text}")
 
 async def check_download_progress(task_id: str, session: aiohttp.ClientSession, headers: dict) -> dict:
     """Check download task progress."""
+    url = f"{API_BASE_URL}/download/{task_id}"
+    await log_api_request("GET", url, headers=headers)
+    
     try:
-        async with session.get(f"{API_BASE_URL}/download/{task_id}",
-                             headers=headers) as response:
+        async with session.get(url, headers=headers) as response:
+            response_text = await response.text()
+            await log_api_response(response.status, response_text)
+            
             if response.status != 200:
-                error_text = await response.text()
-                logger.error(f"Error checking progress. Status: {response.status}, Response: {error_text}")
-                raise Exception(f"API returned status {response.status}: {error_text}")
+                raise Exception(f"API returned status {response.status}: {response_text}")
             return await response.json()
     except Exception as e:
-        logger.error(f"Error in check_download_progress: {str(e)}")
+        logger.error(f"{Fore.RED}Error in check_download_progress: {str(e)}{Style.RESET_ALL}")
         raise
 
 def create_progress_bar(progress: int) -> str:
@@ -345,24 +407,32 @@ async def handle_video_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 resolution = format.get("resolution", "")
                 size = format_size(format.get("filesize_approx"))
                 quality_text = ""
+                format_id = ""
                 
                 if "480" in resolution or "360" in resolution:
                     quality_text = "📼 SD"
+                    format_id = "SD"
                 elif "720" in resolution:
                     quality_text = "📺 HD"
+                    format_id = "HD"
                 elif "1080" in resolution:
                     quality_text = "🖥 FullHD"
+                    format_id = "FullHD"
                 elif "1440" in resolution:
                     quality_text = "🎮 2K"
+                    format_id = format.get("format_id", "")
                 elif "2160" in resolution:
                     quality_text = "📱 4K"
+                    format_id = format.get("format_id", "")
                 elif "3840" in resolution:
                     quality_text = "🖥 4K UHD"
+                    format_id = format.get("format_id", "")
                 else:
                     quality_text = "🎥"
+                    format_id = format.get("format_id", "")
                 
                 button_text = f"{quality_text} ({size})"
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"format_{format['format_id']}")])
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"format_{format_id}")])
         
         # Добавляем кнопку для аудио
         audio_size = "~40.02 MB"  # Примерный размер аудио
@@ -470,73 +540,73 @@ async def handle_format_selection(update: Update, context: ContextTypes.DEFAULT_
             return
             
         if format_type == "audio":
-            async with aiohttp.ClientSession() as session:
-                headers = {"X-API-Key": VIDEO_API_KEY}
-                params = {
-                    "url": video_url,
-                    "convert_to_mp3": "true"
-                }
-                async with session.get(f"{API_BASE_URL}/audio/download",
-                                    params=params,
-                                    headers=headers) as response:
-                    download_task = await response.json()
-                    logger.info(f"Audio download task created: {download_task}")
-                    
-                    if "task_id" in download_task:
-                        # Запускаем отслеживание прогресса
+            # Создаем задачу на скачивание аудио
+            download_task = await create_download_task(video_url, "", is_audio=True)
+            
+            if "task_id" in download_task:
+                await update_progress_message(
+                    query.message,
+                    download_task["task_id"],
+                    f"{video_info.get('title', 'Аудио')} (Аудио)"
+                )
+            elif "error" in download_task:
+                error_message = await query.message.reply_text(
+                    f"❌ Ошибка при создании задачи: {download_task['error']}"
+                )
+                await store_message(context, error_message)
+            else:
+                # Если получили информацию о формате без task_id, создаем новую задачу
+                format_id = download_task.get("format", "")
+                if format_id:
+                    format_task = await create_download_task(video_url, format_id, is_audio=True)
+                    if "task_id" in format_task:
                         await update_progress_message(
                             query.message,
-                            download_task["task_id"],
+                            format_task["task_id"],
                             f"{video_info.get('title', 'Аудио')} (Аудио)"
                         )
-                    elif "error" in download_task:
+                    else:
                         error_message = await query.message.reply_text(
-                            f"❌ Ошибка при создании задачи: {download_task['error']}"
+                            "❌ Не удалось создать задачу на скачивание аудио."
                         )
                         await store_message(context, error_message)
-                    else:
-                        # Если получили информацию о формате без task_id, создаем новую задачу
-                        format_id = download_task.get("format", "")
-                        if format_id:
-                            params = {
-                                "url": video_url,
-                                "format": format_id
-                            }
-                            async with session.get(f"{API_BASE_URL}/download",
-                                                params=params,
-                                                headers=headers) as format_response:
-                                format_task = await format_response.json()
-                                if "task_id" in format_task:
-                                    await update_progress_message(
-                                        query.message,
-                                        format_task["task_id"],
-                                        f"{video_info.get('title', 'Аудио')} (Аудио)"
-                                    )
-                                else:
-                                    error_message = await query.message.reply_text(
-                                        "❌ Не удалось создать задачу на скачивание аудио."
-                                    )
-                                    await store_message(context, error_message)
-                        else:
-                            error_message = await query.message.reply_text(
-                                "❌ Не удалось получить информацию о формате аудио."
-                            )
-                            await store_message(context, error_message)
+                else:
+                    error_message = await query.message.reply_text(
+                        "❌ Не удалось получить информацию о формате аудио."
+                    )
+                    await store_message(context, error_message)
         else:
-            async with aiohttp.ClientSession() as session:
-                headers = {"X-API-Key": VIDEO_API_KEY}
-                params = {
-                    "url": video_url,
-                    "format": format_type
-                }
-                async with session.get(f"{API_BASE_URL}/download",
-                                    params=params,
-                                    headers=headers) as response:
-                    download_task = await response.json()
-                    logger.info(f"Video download task created: {download_task}")
-                    
-                    if "task_id" in download_task:
-                        # Находим информацию о выбранном формате
+            # Создаем задачу на скачивание видео
+            download_task = await create_download_task(video_url, format_type)
+            
+            if "task_id" in download_task:
+                # Находим информацию о выбранном формате
+                selected_format = next(
+                    (f for f in video_info.get("video_formats", [])
+                     if f["format_id"] == format_type),
+                    None
+                )
+                
+                quality_str = ""
+                if selected_format and selected_format.get("resolution"):
+                    quality_str = f" ({selected_format['resolution']})"
+                
+                await update_progress_message(
+                    query.message,
+                    download_task["task_id"],
+                    f"{video_info.get('title', 'Видео')}{quality_str}"
+                )
+            elif "error" in download_task:
+                error_message = await query.message.reply_text(
+                    f"❌ Ошибка при создании задачи: {download_task['error']}"
+                )
+                await store_message(context, error_message)
+            else:
+                # Если получили информацию о формате без task_id, создаем новую задачу
+                format_id = download_task.get("format", "")
+                if format_id:
+                    format_task = await create_download_task(video_url, format_id)
+                    if "task_id" in format_task:
                         selected_format = next(
                             (f for f in video_info.get("video_formats", [])
                              if f["format_id"] == format_type),
@@ -547,57 +617,22 @@ async def handle_format_selection(update: Update, context: ContextTypes.DEFAULT_
                         if selected_format and selected_format.get("resolution"):
                             quality_str = f" ({selected_format['resolution']})"
                         
-                        # Запускаем отслеживание прогресса
                         await update_progress_message(
                             query.message,
-                            download_task["task_id"],
+                            format_task["task_id"],
                             f"{video_info.get('title', 'Видео')}{quality_str}"
                         )
-                    elif "error" in download_task:
+                    else:
                         error_message = await query.message.reply_text(
-                            f"❌ Ошибка при создании задачи: {download_task['error']}"
+                            "❌ Не удалось создать задачу на скачивание видео."
                         )
                         await store_message(context, error_message)
-                    else:
-                        # Если получили информацию о формате без task_id, создаем новую задачу
-                        format_id = download_task.get("format", "")
-                        if format_id:
-                            params = {
-                                "url": video_url,
-                                "format": format_id
-                            }
-                            async with session.get(f"{API_BASE_URL}/download",
-                                                params=params,
-                                                headers=headers) as format_response:
-                                format_task = await format_response.json()
-                                if "task_id" in format_task:
-                                    # Находим информацию о выбранном формате
-                                    selected_format = next(
-                                        (f for f in video_info.get("video_formats", [])
-                                         if f["format_id"] == format_type),
-                                        None
-                                    )
-                                    
-                                    quality_str = ""
-                                    if selected_format and selected_format.get("resolution"):
-                                        quality_str = f" ({selected_format['resolution']})"
-                                    
-                                    await update_progress_message(
-                                        query.message,
-                                        format_task["task_id"],
-                                        f"{video_info.get('title', 'Видео')}{quality_str}"
-                                    )
-                                else:
-                                    error_message = await query.message.reply_text(
-                                        "❌ Не удалось создать задачу на скачивание видео."
-                                    )
-                                    await store_message(context, error_message)
-                        else:
-                            error_message = await query.message.reply_text(
-                                "❌ Не удалось получить информацию о формате видео."
-                            )
-                            await store_message(context, error_message)
-                        
+                else:
+                    error_message = await query.message.reply_text(
+                        "❌ Не удалось получить информацию о формате видео."
+                    )
+                    await store_message(context, error_message)
+                    
     except Exception as e:
         logger.error(f"Error creating download task: {e}")
         error_message = await query.message.reply_text(

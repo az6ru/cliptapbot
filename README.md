@@ -1,63 +1,80 @@
-# Video Download Telegram Bot
+# Video Download Bot
 
-Telegram бот для скачивания видео с использованием Video Metadata Service API.
+Telegram бот для скачивания видео с различных платформ (YouTube, Vimeo, TikTok и др.)
 
 ## Возможности
 
-- Получение информации о видео (название, автор, длительность)
-- Выбор качества и формата видео
-- Скачивание видео по прямой ссылке
-- Поддержка различных видео платформ
+- Скачивание видео в разных качествах (SD, HD, FullHD, 4K)
+- Извлечение аудио в MP3
+- Поддержка множества платформ
+- Удобный интерфейс с кнопками
+- Отображение прогресса загрузки
 
-## Установка
+## Требования
+
+- Docker и Docker Compose
+- Telegram Bot Token (получить у @BotFather)
+- API ключ для Video API
+
+## Установка и запуск
 
 1. Клонируйте репозиторий:
 ```bash
 git clone <repository-url>
-cd <repository-name>
+cd video-download-bot
 ```
 
-2. Создайте виртуальное окружение и активируйте его:
-```bash
-python -m venv venv
-source venv/bin/activate  # для Linux/Mac
-venv\Scripts\activate     # для Windows
-```
-
-3. Установите зависимости:
-```bash
-pip install -r requirements.txt
-```
-
-4. Создайте файл `.env` на основе `.env.example`:
+2. Создайте файл .env на основе .env.example:
 ```bash
 cp .env.example .env
 ```
 
-5. Отредактируйте `.env` файл:
-- Получите токен бота у [@BotFather](https://t.me/BotFather)
-- Укажите API ключ для Video Metadata Service
-- При необходимости измените базовый URL API
-
-## Запуск
-
-```bash
-python bot.py
+3. Отредактируйте .env файл:
+```
+TELEGRAM_TOKEN=your_telegram_bot_token
+VIDEO_API_KEY=your_video_api_key
+API_BASE_URL=https://api-url/api
 ```
 
-## Использование
+4. Запустите бота через Docker Compose:
+```bash
+docker-compose up -d
+```
 
-1. Начните чат с ботом командой `/start`
-2. Отправьте боту ссылку на видео
-3. Выберите желаемый формат из предложенных
-4. Получите ссылку на скачивание
+## Мониторинг
 
-## Требования
+Просмотр логов:
+```bash
+docker-compose logs -f bot
+```
 
-- Python 3.7+
-- Токен Telegram бота
-- Ключ доступа к Video Metadata Service API
+## Обновление
+
+1. Остановите бота:
+```bash
+docker-compose down
+```
+
+2. Получите последние изменения:
+```bash
+git pull
+```
+
+3. Пересоберите и запустите:
+```bash
+docker-compose up -d --build
+```
+
+## Поддерживаемые платформы
+
+- YouTube
+- Vimeo
+- DailyMotion
+- Facebook
+- Instagram
+- Twitter/X
+- TikTok
 
 ## Лицензия
 
-MIT 
+MIT License 
